@@ -13,6 +13,7 @@ namespace RPCHandler
 {
 	// TFunction<void(const FRPCPacketWrapper&)> 타입에 대한 짧은 이름 정의
 	using HandlerDelegate = TFunction<void(const FRPCPacketWrapper&)>;
+	using HandlerDelegate_Validate = TFunction<bool(const FRPCPacketWrapper&)>;
 }
 
 UENUM()
@@ -21,6 +22,7 @@ enum class EPacketType : uint16
 	NONE,
 	ChangeColor,
 	ChangeColor_Response,
+	Error_Response, // 공용 에러 응답 타입 추가
 	MAX,
 };
 
@@ -111,6 +113,29 @@ public:
 };
 
 USTRUCT()
+struct FRPCPacketRes_Error : public FRPCPacket_S2C
+{
+	GENERATED_BODY()
+public:
+	///Todo : 응답받고 큐에서 제거하고... 흠....
+	   // 실패한 원본 요청의 패킷 타입
+	UPROPERTY()
+	EPacketType OriginalRequestType = EPacketType::NONE;
+
+	// (선택 사항) 좀 더 상세한 에러 메시지 문자열
+	UPROPERTY()
+	FString ErrorMessage;
+
+public:
+	virtual void SerializePacket(FArchive& inArchive) override
+	{
+		FRPCPacket_S2C::SerializePacket(inArchive); // 부모 클래스 직렬화 (SerialNumber, TimeStamp, ResponseCode 처리)
+		inArchive << OriginalRequestType;
+		inArchive << ErrorMessage;
+	}
+};
+
+USTRUCT()
 struct FRPCPacketWrapper
 {
 	GENERATED_BODY()
@@ -149,14 +174,25 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void InitializeComponent() override;
 
+	
 public:
 	// Called every frame
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+
+#pragma region RPC core
+protected:
+	void Initialized();
+	void Clear();
+	void SavedCheaterInfo(const FString& inReason, FRPCPacketWrapper inWrapper);
+	APlayerState* GetPlayerState();
+	UNetConnection* GetNetConnection();
+	void ResponseError(FRPCPacketWrapper inPacketWrapper, int32 inErrorCode = 0);
 
 public:
 	// 클라이언트가 서버로 패킷을 보낼 때 호출
 	UFUNCTION(Server, Reliable, WithValidation) // 안정적인 전송 + 검증 함수 필요
 		void Server_SendPacket(FRPCPacketWrapper PacketWrapper);
+
 	bool Server_SendPacket_Validate(FRPCPacketWrapper PacketWrapper);
 	void Server_SendPacket_Implementation(FRPCPacketWrapper PacketWrapper);
 
@@ -164,14 +200,24 @@ public:
 	UFUNCTION(Client, Reliable)
 	void Client_ReceivePacket(FRPCPacketWrapper PacketWrapper);
 	void Client_ReceivePacket_Implementation(FRPCPacketWrapper PacketWrapper);
+#pragma endregion  RPC core
 
+#pragma region server side processing
+public:
 	UFUNCTION()
 	void OnReq_ChangeColor(FRPCPacketWrapper inPacketWrapper);
 
+	UFUNCTION()
+	bool OnReq_ChangeColor_Validate(FRPCPacketWrapper inPacketWrapper);
+
+	
+
+protected:
+	//멤버 함수 포인터 사용
+	TMap<EPacketType, RPCHandler::HandlerDelegate> FunctionMap;
+	TMap<EPacketType, RPCHandler::HandlerDelegate_Validate> FunctionMap_Validate;
+#pragma endregion  server side processing
+
 protected:
 	AServerTestPlayerController* FindPlayerControllerById(int32 inPlayerId);
-
-	// 옵션 A: 멤버 함수 포인터 사용
-	TMap<EPacketType, RPCHandler::HandlerDelegate> DelegateFunctionMap;
-
 };

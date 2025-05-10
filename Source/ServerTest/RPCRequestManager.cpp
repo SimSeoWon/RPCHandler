@@ -16,7 +16,6 @@ URPCRequestManager* URPCRequestManager::Get(const UObject* inWorldContext, int32
 ///Todo - Test Packet
 void URPCRequestManager::ReqChangeColor()
 {
-
 	auto lambda_RecvPack = [this](const FRPCPacket_S2C& inRes)
 		{
 			if (inRes.ResponseCode == 0)
@@ -58,5 +57,40 @@ void URPCRequestManager::SendRequest(EPacketType inType, FRPCPacket_C2S& Request
 
 void URPCRequestManager::RecvResponse(const FRPCPacketWrapper& inWrapper)
 {
+	// 에러코드를 받았다면...?
+	if (inWrapper.PacketType == EPacketType::Error_Response)
+	{
+		FRPCPacketRes_Error errorResponse;
+		FMemoryReader reader(inWrapper.Payload, true);
+		errorResponse.SerializePacket(reader);
 
+		// 로그를 남기고..
+		UE_LOG(LogTemp, Warning, TEXT("Received Generic Error. Original Req: %s, Code: %d, Msg: %s"),
+			*UEnum::GetValueAsString(errorResponse.OriginalRequestType),
+			errorResponse.ResponseCode,
+			*errorResponse.ErrorMessage);
+
+		if (false == PendingRequests.Contains(errorResponse.SerialNumber))
+			return; // 타임 아웃등으로 이미 제거됨.
+
+		PendingRequests[errorResponse.SerialNumber].Callback(errorResponse);
+		// 콜백 호출 (콜백 함수 내부에서 처리하자.)
+		
+		PendingRequests.Remove(errorResponse.SerialNumber);
+	}
+	else 
+	{
+		FRPCPacket_S2C response;
+		FMemoryReader reader(inWrapper.Payload, true);
+		response.SerializePacket(reader);
+
+		if (false == PendingRequests.Contains(response.SerialNumber))
+			return; // 타임 아웃등으로 이미 제거됨.
+
+		//PendingRequests[response.SerialNumber].Callback(errorResponse);
+		// 콜백 처리
+
+		PendingRequests.Remove(response.SerialNumber);
+		// Pending 목록에서 제거.
+	}
 }
