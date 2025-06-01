@@ -11,7 +11,7 @@
 #include "InputActionValue.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
-#include "RPCHandlerComponent.h"
+#include "RPCHandler/RPCHandlerComponent.h"
 
 #include "ServerTest.h"
 DEFINE_LOG_CATEGORY(LogTemplateCharacter);

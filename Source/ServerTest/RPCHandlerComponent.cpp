@@ -5,23 +5,12 @@
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerState.h"
 #include "RPCRequestManager.h"
-#include "ServerTestPlayerController.h"
-
-#define REGISTER_HANDLER(EnumType, MemberFunc) \
-{ \
-	FunctionMap.Emplace(EnumType, [this](const FRPCPacketWrapper& Wrapper) \
-	{	\
-		(this->*(&MemberFunc))(Wrapper); \
-	}); \
-}
-
-#define REGISTER_HANDLER_VALIDATE(EnumType, ValidateMemberFunc) \
-{ \
-    FunctionMap_Validate.Emplace(EnumType, [this](const FRPCPacketWrapper& Wrapper) -> bool \
-    {   \
-        return (this->*(&ValidateMemberFunc))(Wrapper); \
-    }); \
-}
+#include "../ServerTestPlayerController.h"
+#include "Handlers/RPCPacketBase.h"
+#include "Functor/RPCFunctor_C2SLobbyReady.h"
+#include "Functor/RPCFunctor_S2CLobbyReady.h"
+#include "Functor/RPCFunctor_S2CCommonError.h"
+#include "RPCPacketTypes.h"
 
 // Sets default values for this component's properties
 URPCHandlerComponent::URPCHandlerComponent()
@@ -59,67 +48,77 @@ void URPCHandlerComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 }
 void URPCHandlerComponent::Clear()
 {
-	FunctionMap.Reset();
-	FunctionMap_Validate.Reset();
+	FunctorMap.Reset();
+	FunctorList.Reset();
 }
 
 void URPCHandlerComponent::Initialized()
 {
 	Clear();
 
-	// 패킷 수신
-	REGISTER_HANDLER(EPacketType::ChangeColor, URPCHandlerComponent::OnReq_ChangeColor);
+	//C2S_Functor
+	FunctorMap.Add(ERPCPacketTypes::C2S_Lobby_Ready, MakeShared<FRPCFunctor_C2SLobbyReady>());
 
-	// 패킷 검증
-	REGISTER_HANDLER_VALIDATE(EPacketType::ChangeColor, URPCHandlerComponent::OnReq_ChangeColor_Validate);
+	//S2C_Functor
+	FunctorMap.Add(ERPCPacketTypes::S2C_Lobby_Ready, MakeShared<FRPCFunctor_S2CLobbyReady>());	
+	FunctorMap.Add(ERPCPacketTypes::S2C_Common_Error, MakeShared<FRPCFunctor_S2CCommonError>());
+
+	FunctorList.Reserve(FunctorMap.Num());
+	FunctorMap.GenerateValueArray(FunctorList);	
 }
 
 // 클라이언트가 서버로 패킷을 보낼 때 호출
 void URPCHandlerComponent::Server_SendPacket_Implementation(FRPCPacketWrapper inWrapper)
 {
-	EPacketType type = inWrapper.PacketType;
-	if (false == FunctionMap.Contains(type))
-		return;
+	ERPCPacketTypes type = inWrapper.PacketType;
 
-	const RPCHandler::HandlerDelegate* delegate = FunctionMap.Find(type);
-
-	// 핸들러를 찾았고, 유효한 함수가 바인딩되어 있는지 확인
-	if (delegate && (*delegate)) // TFunction은 IsBound() 대신 operator bool() 로 체크 가능
+	// 클라이언트가 작업 할 수 있는 영역이 아니다.
+	if (ERPCPacketTypes::C2S_Maximum >= type)
 	{
-		// 찾은 TFunction (델리게이트) 실행!
-		(*delegate)(inWrapper);
-	}
-	else
-	{
-		// 등록되지 않았거나 유효하지 않은 핸들러
+		ResponseError(inWrapper, -1);// 에러 패킷을 보내자.
 		UE_LOG(LogTemp, Warning, TEXT("No valid handler found for packet type: %d"), (int32)type);
+		return;
+	}
+
+	if (false == FunctorMap.Contains(type))
+	{
+		ResponseError(inWrapper, -1);// 에러 패킷을 보내자.
+		UE_LOG(LogTemp, Warning, TEXT("No valid handler found for packet type: %d"), (int32)type);
+		return;
+	}
+
+	const TSharedPtr<IRPCFunctor> functor = FunctorMap[type];
+	if (false == functor.IsValid())
+	{
+		ResponseError(inWrapper, -1);// 에러 패킷을 보내자.
+		return;
+	}
+
+	int32 resultCode = functor->Execute(this, inWrapper);
+	if (0 < resultCode) // 서버에서 작업이 불가능했다.
+	{
+		ResponseError(inWrapper, resultCode);// 에러 패킷을 보내자.
+		return;
 	}
 }
 
 bool URPCHandlerComponent::Server_SendPacket_Validate(FRPCPacketWrapper inWrapper)
 {
-	EPacketType type = inWrapper.PacketType;
-	// 검증이 필요한가?
-	if (false == FunctionMap_Validate.Contains(type))
-		return true; // 등록된 검증 로직이 없음.
-
-	const RPCHandler::HandlerDelegate_Validate* delegate = FunctionMap_Validate.Find(type);
-	if (delegate && (*delegate)) // TFunction은 IsBound() 대신 operator bool() 로 체크 가능
+	ERPCPacketTypes type = inWrapper.PacketType;
+	if (false == FunctorMap.Contains(type))
 	{
-		// 찾은 TFunction (델리게이트) 실행!
-		if (false == (*delegate)(inWrapper))
-		{
-			FString reason = TEXT("kr");
-			// 상대방 정보 저장하기.
-			SavedCheaterInfo(reason, inWrapper);
-			return false;
-		}
-
+		// 등록된 펑터가 존재하지 않음. 일단 통과시킨다.
 		return true;
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("No valid handler found for packet type: %d"), (int32)type);
-	return false;
+	const TSharedPtr<IRPCFunctor> functor = FunctorMap[type];
+	if (false == functor.IsValid())
+	{
+		// 펑터 포인터가 유효하지 않다. 일단 통과시킨다.
+		return true;
+	}
+
+	return functor->Validate(this, inWrapper);
 }
 
 APlayerState* URPCHandlerComponent::GetPlayerState()
@@ -149,15 +148,15 @@ void URPCHandlerComponent::ResponseError(FRPCPacketWrapper inPacketWrapper, int3
 	reqPacket.SerializePacket(reader); // Reader에서 데이터 읽어 Packet 채우기
 
 	// ***** 실패 시 공용 에러 응답 패킷 전송 *****
-	FRPCPacketRes_Error errorResponse;
+	FRPCPacketS2C_Error errorResponse;
 	errorResponse.SerialNumber = reqPacket.SerialNumber; // 원본 요청의 SerialNumber
 	errorResponse.TimeStamp = FDateTime::UtcNow().ToUnixTimestamp(); // 응답한 시간.
 	errorResponse.ResponseCode = inErrorCode; // 에러 코드
 	errorResponse.OriginalRequestType = inPacketWrapper.PacketType; // 원본 요청의 타입!
-	errorResponse.ErrorMessage = TEXT("아이템이 부족하여 색상 변경에 실패했습니다."); // 선택적 메시지
+	errorResponse.ErrorMessage = TEXT(""); // 선택적 메시지
 
 	FRPCPacketWrapper errorWrapper;
-	errorWrapper.PacketType = EPacketType::Error_Response; // 공용 에러 응답 타입
+	errorWrapper.PacketType = ERPCPacketTypes::S2C_Common_Error; // 공용 에러 응답 타입
 	if (errorWrapper.SerializePacket(errorResponse))
 	{
 		Client_ReceivePacket(errorWrapper);
@@ -168,44 +167,62 @@ void URPCHandlerComponent::ResponseError(FRPCPacketWrapper inPacketWrapper, int3
 	}
 }
 
-void URPCHandlerComponent::SavedCheaterInfo(const FString& inReason, FRPCPacketWrapper inWrapper)
+ //서버가 클라이언트로 패킷을 보낼 때 호출
+void URPCHandlerComponent::Client_ReceivePacket_Implementation(FRPCPacketWrapper inWrapper)
 {
-	// 검증 실패! 접속을 즉시 끊는다. 로그는 여기에 남기자.
-	FString description = TEXT("UnknownPlayer");
-	FString netAddress = TEXT("UnknownAddress");
+	ERPCPacketTypes type = inWrapper.PacketType;
 
-	APlayerController* pc = Cast<APlayerController>(GetOwner());
-	if (false == IsValid(pc))
+	// 서버가 할 수 있는 작업이 아니다.
+	if (ERPCPacketTypes::C2S_Maximum < type)
+	{
+		//팝업 노출할까?
+		//아니면 로그를 등록할까?
+		UE_LOG(LogTemp, Warning, TEXT("No valid handler found for packet type: %d"), (int32)type);
 		return;
-
-	APlayerState* ps = GetPlayerState();
-	if (IsValid(ps))
-	{
-		//description = FString::Printf(TEXT("PlayerName: %s, UniqueID: %s"),
-		//	*ps->GetPlayerName(), 
-		//	ps->GetUniqueId().IsValid() ? *ps->GetUniqueId().ToString() : TEXT("Invalid"));
 	}
 
-	UNetConnection* connection = GetNetConnection();
-	if (IsValid(connection))
+	if (false == FunctorMap.Contains(type))
 	{
-		//netAddress = connection->LowLevelGetRemoteAddress(true);
+		//팝업 노출할까?
+		//아니면 로그를 등록할까?
+		UE_LOG(LogTemp, Warning, TEXT("No valid handler found for packet type: %d"), (int32)type);
+		return;
 	}
 
-	// 로그 채널을 별도로 만들거나, 보안 관련 로그 레벨을 사용할 수 있습니다.
-	//UE_LOG(LogSecurity, Warning, TEXT("Suspicious RPC activity from Client [%s, IP: %s]. Reason: '%s'. PacketType: %s."),
-	//	*description, *netAddress, *inReason, *UEnum::GetValueAsString(inWrapper.PacketType) // EPacketType을 UENUM으로 만들었다면
-	//);
+	const TSharedPtr<IRPCFunctor> functor = FunctorMap[type];
+	if (false == functor.IsValid())
+	{
+		//팝업 노출할까?
+		//아니면 로그를 등록할까?
+		return;
+	}
+
+	int32 resultCode = functor->Execute(this, inWrapper);
+	if (0 < resultCode) // 클라에서 작업이 불가능했다.
+	{
+		//팝업 노출할까?
+		//아니면 로그를 등록할까?
+	}
 }
 
-// 서버가 클라이언트로 패킷을 보낼 때 호출
-void URPCHandlerComponent::Client_ReceivePacket_Implementation(FRPCPacketWrapper PacketWrapper)
+bool URPCHandlerComponent::Client_ReceivePacket_Validate(FRPCPacketWrapper inWrapper)
 {
-	URPCRequestManager* manager = URPCRequestManager::Get(this);
-	if (false == IsValid(manager))
-		return;
+	ERPCPacketTypes type = inWrapper.PacketType;
+	if (false == FunctorMap.Contains(type))
+	{
+		// 등록된 펑터가 존재하지 않음. 일단 통과시킨다.
+		return true;
+	}
 
-	manager->RecvResponse(PacketWrapper);
+	const TSharedPtr<IRPCFunctor> functor = FunctorMap[type];
+	if (false == functor.IsValid())
+	{
+		// 펑터 포인터가 유효하지 않다. 일단 통과시킨다.
+		return true;
+	}
+
+	// 검증 불가 패킷이 통신되고 있다. 게임사에 로그를 남기자.
+	return functor->Validate(this, inWrapper);
 }
 
 AServerTestPlayerController* URPCHandlerComponent::FindPlayerControllerById(int32 inPlayerId)

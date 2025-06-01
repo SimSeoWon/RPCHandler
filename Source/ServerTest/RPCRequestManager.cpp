@@ -2,10 +2,11 @@
 
 
 #include "RPCRequestManager.h"
-
 #include "RPCHandlerComponent.h"
-#include "ServerTestPlayerController.h"
-
+#include "Handlers/RPCPacketBase.h"
+#include "RPCPacketTypes.h"
+#include "Handlers/RPCPacketBase.h"
+#include "../ServerTestPlayerController.h"
 
 
 URPCRequestManager* URPCRequestManager::Get(const UObject* inWorldContext, int32 inPlayerIndex)
@@ -13,84 +14,156 @@ URPCRequestManager* URPCRequestManager::Get(const UObject* inWorldContext, int32
 	return GetSubSystem<URPCRequestManager>(inWorldContext, inPlayerIndex);
 }
 
-///Todo - Test Packet
-void URPCRequestManager::ReqChangeColor()
+void URPCRequestManager::Initialize(FSubsystemCollectionBase& Collection)
 {
-	auto lambda_RecvPack = [this](const FRPCPacket_S2C& inRes)
-		{
-			if (inRes.ResponseCode == 0)
-			{
-				return;
-			}
-		};
+	Super::Initialize(Collection);
 
-	FRPCPacketReq_ChangeColor packet;
-	packet.Color = FLinearColor::Yellow;
-	SendRequest(EPacketType::ChangeColor, packet, lambda_RecvPack);
+	// 타임아웃 검사 타이머 시작
+	UWorld* world = GetWorld(); // ULocalPlayerSubsystem은 GetWorld()를 통해 World에 접근 가능
+	if (world)
+	{
+		world->GetTimerManager().SetTimer(
+			TimeoutCheckTimerHandle,      // 타이머 핸들
+			this,                         // 호출될 함수를 가진 객체
+			&URPCRequestManager::CheckTimeouts, // 호출될 함수 포인터
+			TimeoutCheckInterval,         // 호출 간격 (초)
+			true                          // 반복 여부
+		);
+
+		UE_LOG(LogTemp, Log, TEXT("URPCRequestManager: Timeout check timer started."));
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("URPCRequestManager: Could not get World to start timeout timer."));
+	}
 }
 
-void URPCRequestManager::SendRequest(EPacketType inType, FRPCPacket_C2S& Request, TFunction<void(const FRPCPacket_S2C&)> OnResponse)
+void URPCRequestManager::Deinitialize()
+{
+	// 핸들러 정리
+	UWorld* world = GetWorld();
+	if (world)
+	{
+		world->GetTimerManager().ClearTimer(TimeoutCheckTimerHandle);
+		UE_LOG(LogTemp, Log, TEXT("URPCRequestManager: Timeout check timer cleared."));
+	}
+
+	PendingRequests.Reset();
+	Super::Deinitialize();
+}
+
+void URPCRequestManager::CheckTimeouts()
+{
+	UWorld* world = GetWorld();
+	if (false == IsValid(world))
+		return;
+
+	double CurrentTime = GetWorld()->GetTimeSeconds();
+	TArray<FGuid> TimedOutRequestSerials;
+
+	// 1. 타임아웃된 요청 찾기
+	for (const auto& Pair : PendingRequests)
+	{
+		const FPendingRequest& Request = Pair.Value;
+		if ((CurrentTime - Request.RequestTime) > RequestTimeoutDuration)
+		{
+			TimedOutRequestSerials.Add(Request.SerialNumber);
+		}
+	}
+
+	// 2. 타임아웃된 요청 처리
+	for (const FGuid& Serial : TimedOutRequestSerials)
+	{
+		if (FPendingRequest* TimedOutRequest = PendingRequests.Find(Serial))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Request timed out. Serial: %s"), *Serial.ToString());
+			//Todo - 팝업창이라도 노출할까?
+			PendingRequests.Remove(Serial); // 맵에서 제거
+		}
+	}
+}
+
+bool URPCRequestManager::SendRequest(ERPCPacketTypes type, FRPCPacket_C2S& inRequest, RPCHandler::OnResponseCallback inFunction)
 {
 	URPCHandlerComponent* rpcHandler = GetRPCHandlerComponent();
 	if (false == IsValid(rpcHandler))
-		return;
+		return false;
 
-	Request.SerialNumber = FGuid::NewGuid(); // SerialNumber 발급
-	Request.TimeStamp = FDateTime::UtcNow().ToUnixTimestamp(); // 시간 기록
-	Request.PlayerNumber = GetMyPlayerId();
+	inRequest.SerialNumber = FGuid::NewGuid(); // SerialNumber 발급
+	inRequest.TimeStamp = FDateTime::UtcNow().ToUnixTimestamp(); // 시간 기록
+	inRequest.PlayerNumber = GetMyPlayerId();
+	inRequest.Version = 1;
 
 	// 실제로 서버에 전송하는 래퍼 클래스
 	FRPCPacketWrapper wrapper;
-	wrapper.SerializePacket(Request);
-	wrapper.PacketType = inType;
+	wrapper.SerializePacket(inRequest);
+	wrapper.PacketType = type;
 
 	// 큐에 등록
 	FPendingRequest pending;
-	pending.SerialNumber = Request.SerialNumber;
-	pending.RequestTime = Request.TimeStamp;
-	pending.Callback = OnResponse;
-	PendingRequests.Add(Request.SerialNumber, pending);
+	pending.SerialNumber = inRequest.SerialNumber;
+	pending.RequestTime = inRequest.TimeStamp;
+	pending.Callback = inFunction;
+	PendingRequests.Add(inRequest.SerialNumber, pending);
 
 	///Todo - Send Packet To Server(Wrapper);
 	rpcHandler->Server_SendPacket(wrapper);
+
+	return true;
 }
 
-void URPCRequestManager::RecvResponse(const FRPCPacketWrapper& inWrapper)
+void URPCRequestManager::OnReceivedError(TSharedPtr<FRPCPacketBase> inPacket, int32 resultCode) 
 {
-	// 에러코드를 받았다면...?
-	if (inWrapper.PacketType == EPacketType::Error_Response)
+	if (false == inPacket.IsValid())
+		return;
+
+	FGuid serialNumber = inPacket->SerialNumber;
+	if (false == PendingRequests.Contains(serialNumber))// 타임 아웃등으로 이미 제거됨.
+		return;
+
+	PendingRequests.Remove(serialNumber);
+}
+
+void URPCRequestManager::OnReceivedResponse(TSharedPtr<FRPCPacketBase> inPacket, int32 resultCode)
+{
+	if (false == inPacket.IsValid())
+		return;
+
+	FGuid serialNumber = inPacket->SerialNumber;
+	if (false == PendingRequests.Contains(serialNumber))// 타임 아웃등으로 이미 제거됨.
+		return;
+	
+	if (0 >= resultCode) ///Todo - 에러가 없음.
 	{
-		FRPCPacketRes_Error errorResponse;
-		FMemoryReader reader(inWrapper.Payload, true);
-		errorResponse.SerializePacket(reader);
-
-		// 로그를 남기고..
-		UE_LOG(LogTemp, Warning, TEXT("Received Generic Error. Original Req: %s, Code: %d, Msg: %s"),
-			*UEnum::GetValueAsString(errorResponse.OriginalRequestType),
-			errorResponse.ResponseCode,
-			*errorResponse.ErrorMessage);
-
-		if (false == PendingRequests.Contains(errorResponse.SerialNumber))
-			return; // 타임 아웃등으로 이미 제거됨.
-
-		PendingRequests[errorResponse.SerialNumber].Callback(errorResponse);
-		// 콜백 호출 (콜백 함수 내부에서 처리하자.)
-		
-		PendingRequests.Remove(errorResponse.SerialNumber);
+		// 등록된 콜백처리 시작.
+		PendingRequests[serialNumber].Callback(inPacket);
 	}
-	else 
-	{
-		FRPCPacket_S2C response;
-		FMemoryReader reader(inWrapper.Payload, true);
-		response.SerializePacket(reader);
 
-		if (false == PendingRequests.Contains(response.SerialNumber))
-			return; // 타임 아웃등으로 이미 제거됨.
+	PendingRequests.Remove(serialNumber);
+}
 
-		//PendingRequests[response.SerialNumber].Callback(errorResponse);
-		// 콜백 처리
+bool URPCRequestManager::Req_LobbyReady()
+{
+	FRPCPacket_C2S packet;
+	TWeakObjectPtr<URPCRequestManager> WeakThis = this;
+	auto lambda_OnReceived = [WeakThis](TSharedPtr<FRPCPacketBase> inPacket)->bool
+		{
+			if (false == WeakThis.IsValid())
+				return false;
 
-		PendingRequests.Remove(response.SerialNumber);
-		// Pending 목록에서 제거.
-	}
+			if(false == inPacket.IsValid())
+				return false;
+
+			TSharedPtr<FRPCPacketS2C_OneParam_Int> lobbyReady = StaticCastSharedPtr<FRPCPacketS2C_OneParam_Int>(inPacket);
+			if (false == lobbyReady.IsValid())
+				return false;
+
+			bool isReady = 0 >= lobbyReady->value;
+
+			///Todo - 플레이어 스테이트에 상태값을 세팅 - UMG 세팅하기
+
+			return true;
+		};
+
+	return SendRequest(ERPCPacketTypes::C2S_Lobby_Ready, packet, lambda_OnReceived);
 }
