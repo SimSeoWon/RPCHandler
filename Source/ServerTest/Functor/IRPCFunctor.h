@@ -28,5 +28,5 @@ protected:
 	virtual int32 Execute_Implements(AServerTestPlayerController* inContext, const FRPCPacketWrapper& inWrapper) = 0;
 
 protected:
-	TSharedPtr<FRPCPacketBase> Packet = nullptr;
+	FGuid SerialNumber;
 };

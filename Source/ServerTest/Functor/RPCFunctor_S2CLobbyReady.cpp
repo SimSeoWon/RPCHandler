@@ -20,6 +20,7 @@ int32 FRPCFunctor_S2CLobbyReady::Execute_Implements(AServerTestPlayerController*
 	if (false == packetS2C.IsValid())
 		return 3;
 
-	Packet = packetS2C;
+
+	SerialNumber = packetS2C->SerialNumber;
 	return 0;
 }

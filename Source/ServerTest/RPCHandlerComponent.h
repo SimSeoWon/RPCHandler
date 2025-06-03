@@ -52,15 +52,6 @@ public:
 #pragma endregion  RPC core
 
 #pragma region server side processing
-public:
-	//UFUNCTION()
-	//void OnReq_ChangeColor(const FRPCPacketWrapper& inPacketWrapper);
-
-	//UFUNCTION()
-	//bool OnReq_ChangeColor_Validate(FRPCPacketWrapper inPacketWrapper);
-
-	//
-
 protected:
 	TMap<ERPCPacketTypes, TSharedPtr<IRPCFunctor>> FunctorMap;
 	TArray<TSharedPtr<IRPCFunctor>> FunctorList;

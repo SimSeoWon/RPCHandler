@@ -26,7 +26,7 @@ int32 FRPCFunctor_C2SLobbyReady::Execute_Implements(AServerTestPlayerController*
 	int64 time = packetC2S->TimeStamp;
 	FGuid serialNumber = packetC2S->SerialNumber;
 	bool isReady = 0 < packetC2S->value;
-	Packet = packetC2S;
 
+	SerialNumber = serialNumber;
 	return 0;
 }

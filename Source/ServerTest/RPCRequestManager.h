@@ -20,7 +20,7 @@ enum class ERPCPacketTypes : uint16;
 
 namespace RPCHandler // 또는 URPCRequestManager 내부
 {
-    using OnResponseCallback = TFunction<bool(TSharedPtr<FRPCPacketBase>)>;
+    using OnResponseCallback = TFunction<bool()>;
 };
 
 struct FPendingRequest
@@ -46,8 +46,8 @@ protected:
 public:
     static URPCRequestManager* Get(const UObject* inWorldContext, int32 inPlayerIndex = 0);
     bool Req_LobbyReady();
-    void OnReceivedResponse(TSharedPtr<FRPCPacketBase> inPacket, int32 resultCode);
-    void OnReceivedError(TSharedPtr<FRPCPacketBase> inPacket, int32 resultCode);
+    void OnReceivedResponse(FGuid inSerialNumber, int32 resultCode);
+    
 
 protected:
     TMap<FGuid, FPendingRequest> PendingRequests;

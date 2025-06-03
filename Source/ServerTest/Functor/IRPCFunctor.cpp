@@ -11,7 +11,6 @@
 
 int32 IRPCFunctor::Execute(UObject* inContext, const FRPCPacketWrapper& inWrapper)
 {
-	Packet = nullptr; // 포인트 정리.
 	if (false == IsValid(inContext))
 		return 1;
 
@@ -28,20 +27,11 @@ int32 IRPCFunctor::Execute(UObject* inContext, const FRPCPacketWrapper& inWrappe
 		URPCRequestManager* manager = URPCRequestManager::Get(inContext);
 		if (IsValid(manager))
 		{
-
-			if (ERPCPacketTypes::S2C_Common_Error == inWrapper.PacketType)
-			{
-				///Todo - 등록된 팬딩 리스트를 삭제..
-				manager->OnReceivedError(Packet, resultCode);
-			}
-			else 
-			{
-				///Todo - 등록된 팬딩 리스트에서 콜백처리...
-				manager->OnReceivedResponse(Packet, resultCode);
-			}
+			///Todo - 등록된 팬딩 리스트에서 콜백처리...
+			manager->OnReceivedResponse(SerialNumber, resultCode);
 		}
 	}
-	
+
 	// 여기서 매니저에게 콜백 함수를 처리할 수 있도록...
 	return resultCode;
 }

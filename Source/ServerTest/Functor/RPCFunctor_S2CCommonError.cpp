@@ -21,15 +21,12 @@ int32 FRPCFunctor_S2CCommonError::Execute_Implements(AServerTestPlayerController
 		return 3;
 
 	packetS2C->SerializePacket(Reader);
-
 	//팬딩 상태를 처리해야 한다.
 	//packetS2C->SerialNumber
 	//packetS2C.OriginalRequestType
 	//packetS2C.SerialNumber
 
 	//게임 스테이트에 세팅하기
-	Packet = packetS2C;
-
-
-	return 0;
+	SerialNumber = packetS2C->SerialNumber;
+	return packetS2C->ErrorCode; // 서버가 보낸 에러 코드 전달하기.
 }

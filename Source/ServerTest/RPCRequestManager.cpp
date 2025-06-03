@@ -112,55 +112,28 @@ bool URPCRequestManager::SendRequest(ERPCPacketTypes type, FRPCPacket_C2S& inReq
 	return true;
 }
 
-void URPCRequestManager::OnReceivedError(TSharedPtr<FRPCPacketBase> inPacket, int32 resultCode) 
+void URPCRequestManager::OnReceivedResponse(FGuid inSerialNumber, int32 resultCode)
 {
-	if (false == inPacket.IsValid())
-		return;
-
-	FGuid serialNumber = inPacket->SerialNumber;
-	if (false == PendingRequests.Contains(serialNumber))// 타임 아웃등으로 이미 제거됨.
-		return;
-
-	PendingRequests.Remove(serialNumber);
-}
-
-void URPCRequestManager::OnReceivedResponse(TSharedPtr<FRPCPacketBase> inPacket, int32 resultCode)
-{
-	if (false == inPacket.IsValid())
-		return;
-
-	FGuid serialNumber = inPacket->SerialNumber;
-	if (false == PendingRequests.Contains(serialNumber))// 타임 아웃등으로 이미 제거됨.
+	if (false == PendingRequests.Contains(inSerialNumber))// 타임 아웃등으로 이미 제거됨.
 		return;
 	
 	if (0 >= resultCode) ///Todo - 에러가 없음.
 	{
 		// 등록된 콜백처리 시작.
-		PendingRequests[serialNumber].Callback(inPacket);
+		PendingRequests[inSerialNumber].Callback();
 	}
 
-	PendingRequests.Remove(serialNumber);
+	PendingRequests.Remove(inSerialNumber);
 }
 
 bool URPCRequestManager::Req_LobbyReady()
 {
 	FRPCPacket_C2S packet;
 	TWeakObjectPtr<URPCRequestManager> WeakThis = this;
-	auto lambda_OnReceived = [WeakThis](TSharedPtr<FRPCPacketBase> inPacket)->bool
+	auto lambda_OnReceived = [WeakThis]()->bool
 		{
 			if (false == WeakThis.IsValid())
 				return false;
-
-			if(false == inPacket.IsValid())
-				return false;
-
-			TSharedPtr<FRPCPacketS2C_OneParam_Int> lobbyReady = StaticCastSharedPtr<FRPCPacketS2C_OneParam_Int>(inPacket);
-			if (false == lobbyReady.IsValid())
-				return false;
-
-			bool isReady = 0 >= lobbyReady->value;
-
-			///Todo - 플레이어 스테이트에 상태값을 세팅 - UMG 세팅하기
 
 			return true;
 		};
